@@ -1,0 +1,12 @@
+services:
+  fearmeter:
+    build: .
+    container_name: FearMeter
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "1m"
+        max-file: "2"
+    environment:
+      - TZ=UTC
