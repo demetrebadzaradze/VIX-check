@@ -6,6 +6,9 @@ COPY . .
 RUN apk add --no-cache curl jq bash 
 RUN chmod +x /home/vix_check.sh
 
-RUN echo "0 5 * * * /home/vix_check.sh > /proc/1/fd/1 2>&1" >> /etc/crontabs/root
-					
+RUN cat ./cron_job.txt >> /etc/crontabs/root
+run cat /etc/crontabs/root
+
+RUN rm -f ./cron_job.txt
+			
 CMD crond -f 
