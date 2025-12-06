@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # vix_check.sh - Fetch VIX daily high and issue warnings with style
 # Requires: curl, jq, awk, date
 # Usage: ./vix_check.sh
@@ -8,7 +8,7 @@
 API_URL="https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1d&range=1d"
 
 # Timezone (customizable; fallback to UTC if invalid)
-TZ="America/New_York"
+TZ="Azia/Tbilisi"
 LOG_PREFIX=$(TZ=$TZ date '+%Y-%m-%d %H:%M:%S %Z' 2>/dev/null || date '+%Y-%m-%d %H:%M:%S UTC')"- VIX Check:"
 
 # Colors for output (ANSI escape codes)
@@ -96,7 +96,7 @@ ascii_art=$(awk -v p="$price" 'BEGIN{
   else if (p >= 70) print "\n   /\\_/\\\n  ( >.< )\n   > ^ <\n  HIGH ALERT!";
   else if (p >= 50) print "\n   /\\_/\\\n  ( o.o )\n   > ^ <\n  SHAKE TIME!";
   else if (p >= 30) print "\n   /\\_/\\\n  ( -.- )\n   > ^ <\n  WATCH OUT!";
-  else print "\n   /\\_/\\\n  ( ^.^ )\n   > ^ <\n  CHILL MODE";
+  else print "\n   /\\_/\\\n  ( ^.^ )\n   > ^ <\n CHILL MODE";
 }')
 
 # Display ASCII art and message with color
