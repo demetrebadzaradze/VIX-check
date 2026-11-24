@@ -1,0 +1,2 @@
+*.sh text eol=lf
+cron_job.txt text eol=lf
