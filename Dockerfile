@@ -1,14 +1,12 @@
-FROM alpine:latest 
+FROM alpine:latest
 
 WORKDIR /home
-COPY . .
 
-RUN apk add --no-cache curl jq bash 
-RUN chmod +x /home/vix_check.sh
+RUN apk add --no-cache bash curl
 
-RUN cat ./cron_job.txt >> /etc/crontabs/root
-run cat /etc/crontabs/root
+COPY vix_check.sh /home/vix_check.sh
+COPY cron_job.txt /etc/crontabs/root
 
-RUN rm -f ./cron_job.txt
-			
-CMD crond -f 
+RUN chmod +x /home/vix_check.sh && chmod 600 /etc/crontabs/root
+
+CMD ["crond", "-f", "-l", "2"]

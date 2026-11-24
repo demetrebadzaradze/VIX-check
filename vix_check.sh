@@ -1,113 +1,105 @@
 #!/bin/bash
-# vix_check.sh - Fetch VIX daily high and issue warnings with style
-# Requires: curl, jq, awk, date
-# Usage: ./vix_check.sh
-# Note: Uses ANSI colors and ASCII art for output
+set -euo pipefail
 
-# API URL for VIX data (Yahoo Finance)
-API_URL="https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1d&range=1d"
+readonly API_URL="https://cdn-api.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv"
+DATA_FILE="${DATA_FILE:-/data/vix.csv}"
+[[ "$DATA_FILE" == */* ]] || DATA_FILE="./$DATA_FILE"
+readonly DATA_FILE
+readonly RAW_FILE="$(mktemp)"
+readonly NORMALIZED_FILE="$(mktemp)"
+readonly NEW_ROWS_FILE="$(mktemp)"
+trap 'rm -f "$RAW_FILE" "$NORMALIZED_FILE" "$NEW_ROWS_FILE"' EXIT
 
-# Timezone (customizable; fallback to UTC if invalid)
-TZ="Azia/Tbilisi"
-LOG_PREFIX=$(TZ=$TZ date '+%Y-%m-%d %H:%M:%S %Z' 2>/dev/null || date '+%Y-%m-%d %H:%M:%S UTC')"- VIX Check:"
+# cat is gone :(
+#printf ' /\\_/\\\\\n( o.o )\n > ^ <\n\n'
 
-# Colors for output (ANSI escape codes)
-RED='\033[0;31m'
-YELLOW='\033[1;33m'
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
-
-# Simple spinner animation during fetch
-spinner() {
-  local spin='⠏⠇⠦⠴⠼⠹⠙⠋'
-  local i=0
-  for _ in {1..10}; do
-    i=$(( (i+1) % ${#spin} ))
-    printf "\r${BLUE}Fetching VIX data... ${spin:$i:1}${NC}"
-    sleep 0.1
-  done
-  printf "\r${BLUE}Fetching VIX data... Done!${NC}\n"
-}
-
-# Fetch JSON and capture stderr
-echo -e "${BLUE}Fetching VIX data...${NC}"
-json=$(curl -sL --max-time 10 -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" "$API_URL" 2>curl_error.log)
-curl_exit=$?
-spinner
-
-# Check for curl errors
-if [ $curl_exit -ne 0 ]; then
-  echo -e "${RED}$LOG_PREFIX Failed: Curl error (exit code $curl_exit)${NC}"
-  echo -e "${YELLOW}Curl error output:${NC}"
-  cat curl_error.log
-  echo -e "${YELLOW}Try running: curl -vL --max-time 10 -H 'User-Agent: Mozilla/5.0' '$API_URL'${NC}"
-  rm -f curl_error.log
-  exit 1
-fi
-rm -f curl_error.log
-
-# Check if response is empty
-if [ -z "$json" ]; then
-  echo -e "${RED}$LOG_PREFIX Failed: No response from API (length: ${#json})${NC}"
-  echo -e "${YELLOW}Try running: curl -vL --max-time 10 -H 'User-Agent: Mozilla/5.0' '$API_URL'${NC}"
-  echo -e "${YELLOW}Check network, SSL certs (sudo apt install ca-certificates), or DNS.${NC}"
+if ! curl --fail --silent --show-error --location \
+  --connect-timeout 10 --max-time 30 \
+  --output "$RAW_FILE" "$API_URL"; then
+  printf 'VIX check failed: could not fetch Cboe daily data.\n' >&2
   exit 1
 fi
 
-# Check if response looks like JSON
-if ! echo "$json" | jq empty >/dev/null 2>&1; then
-  echo -e "${RED}$LOG_PREFIX Failed: Response is not valid JSON${NC}"
-  echo -e "${YELLOW}Response (first 5 lines):${NC}"
-  echo "$json" | head -n 5
+if ! awk -F, '
+  { sub(/\r$/, "", $0) }
+  NR == 1 {
+    if ($1 != "DATE" || $2 != "OPEN" || $3 != "HIGH" || $4 != "LOW" || $5 != "CLOSE") exit 1
+    next
+  }
+  NF != 5 { exit 1 }
+  {
+    split($1, parts, "/")
+    if (length(parts[1]) < 1 || length(parts[1]) > 2 ||
+        length(parts[2]) < 1 || length(parts[2]) > 2 ||
+        length(parts[3]) != 4 ||
+        parts[1] !~ /^[0-9]+$/ || parts[2] !~ /^[0-9]+$/ || parts[3] !~ /^[0-9]+$/ ||
+        parts[1] < 1 || parts[1] > 12 || parts[2] < 1 || parts[2] > 31 ||
+        $5 !~ /^[0-9]+([.][0-9]+)?$/) exit 1
+
+    date = sprintf("%04d-%02d-%02d", parts[3], parts[1], parts[2])
+    if (date <= previous_date) exit 1
+    previous_date = date
+
+    close_value = $5
+    sub(/0+$/, "", close_value)
+    sub(/[.]$/, "", close_value)
+    print date "," close_value
+  }
+  END {
+    if (NR < 2) exit 1
+  }
+' "$RAW_FILE" > "$NORMALIZED_FILE"; then
+  printf 'VIX check failed: Cboe returned an unexpected or invalid CSV.\n' >&2
   exit 2
 fi
 
-# Get today's high from meta.regularMarketDayHigh
-price=$(echo "$json" | jq -r '.chart.result[0].meta.regularMarketDayHigh // empty')
-
-# Fallback: if meta is missing, get last non-null close from indicators
-if [ -z "$price" ] || [ "$price" = "null" ]; then
-  price=$(echo "$json" | jq -r '.chart.result[0].indicators.quote[0].close | map(select(. != null)) | .[-1] // empty')
+mkdir -p "${DATA_FILE%/*}"
+if [[ ! -f "$DATA_FILE" ]]; then
+  printf 'date,close\n' > "$DATA_FILE"
 fi
 
-# Validate numeric value
-if ! awk -v p="$price" 'BEGIN{exit(!(p+0==p))}' 2>/dev/null; then
-  echo -e "${RED}$LOG_PREFIX Could not parse numeric price (raw=$price)${NC}"
-  echo -e "${YELLOW}Debug: JSON structure may have changed. Raw result:${NC}"
-  echo "$json" | jq '.chart.result[0] // {}' | head -n 10
-  echo -e "${YELLOW}Try checking the API at $API_URL in a browser.${NC}"
+if ! IFS= read -r header < "$DATA_FILE" || [[ "$header" != 'date,close' ]]; then
+  printf 'VIX check failed: %s has an invalid CSV header.\n' "$DATA_FILE" >&2
   exit 3
 fi
 
-# Print found price with timestamp
-echo -e "${GREEN}$LOG_PREFIX Today high VIX = $price${NC}"
-
-# Enhanced threshold messages with ASCII art
-message=$(awk -v p="$price" 'BEGIN{
-  if (p >= 100) print "Apocalypse Alert! Markets in Total Chaos – Brace Yourself!";
-  else if (p >= 70) print "Severe Turmoil: Investors in Panic – Volatility Spikes!";
-  else if (p >= 50) print "Global Shake-Up: Markets Trembling – Fear Index Soars!";
-  else if (p >= 30) print "Warning Signs: Trouble Brewing – Volatility Rising!";
-  else print "All Calm: VIX in Normal Range – Markets Steady.";
-}')
-ascii_art=$(awk -v p="$price" 'BEGIN{
-  if (p >= 100) print "\n   /\\_/\\\n  ( o.o )\n   > ^ <\n  !! DANGER !!";
-  else if (p >= 70) print "\n   /\\_/\\\n  ( >.< )\n   > ^ <\n  HIGH ALERT!";
-  else if (p >= 50) print "\n   /\\_/\\\n  ( o.o )\n   > ^ <\n  SHAKE TIME!";
-  else if (p >= 30) print "\n   /\\_/\\\n  ( -.- )\n   > ^ <\n  WATCH OUT!";
-  else print "\n   /\\_/\\\n  ( ^.^ )\n   > ^ <\n CHILL MODE";
-}')
-
-# Display ASCII art and message with color
-if awk -v p="$price" 'BEGIN{exit(!(p>=50))}' 2>/dev/null; then
-  color=$RED
-elif awk -v p="$price" 'BEGIN{exit(!(p>=30))}' 2>/dev/null; then
-  color=$YELLOW
-else
-  color=$GREEN
+if ! last_date=$(awk -F, '
+  NR == 1 { next }
+  NF != 2 || $1 !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/ || $2 !~ /^[0-9]+([.][0-9]+)?$/ { exit 1 }
+  { date = $1 }
+  END { print date }
+' "$DATA_FILE"); then
+  printf 'VIX check failed: %s contains an invalid data row.\n' "$DATA_FILE" >&2
+  exit 3
 fi
-echo -e "${color}$ascii_art${NC}"
-echo -e "${color}$LOG_PREFIX $message${NC}"
 
-exit 0
+latest=$(tail -n 1 "$NORMALIZED_FILE")
+latest_date=${latest%%,*}
+latest_close=${latest#*,}
+if [[ -n "$last_date" && "$latest_date" < "$last_date" ]]; then
+  printf 'VIX check failed: Cboe data is older than the last recorded session.\n' >&2
+  exit 4
+fi
+
+if [[ -z "$last_date" ]]; then
+  printf '%s\n' "$latest" > "$NEW_ROWS_FILE"
+else
+  awk -F, -v last_date="$last_date" '$1 > last_date' "$NORMALIZED_FILE" > "$NEW_ROWS_FILE"
+fi
+
+if [[ ! -s "$NEW_ROWS_FILE" ]]; then
+  printf 'No new VIX session; latest Cboe close is %s (%s).\n' "$latest_close" "$latest_date"
+  exit 0
+fi
+
+cat "$NEW_ROWS_FILE" >> "$DATA_FILE"
+while IFS=, read -r date close; do
+  status=$(awk -v value="$close" 'BEGIN {
+    if (value >= 100) print "EXTREME PANIC"
+    else if (value >= 70) print "SEVERE PANIC"
+    else if (value >= 50) print "HIGH FEAR"
+    else if (value >= 30) print "ELEVATED"
+    else print "CALM"
+  }')
+  printf '%s | VIX close %s | %s\n' "$date" "$close" "$status"
+done < "$NEW_ROWS_FILE"
